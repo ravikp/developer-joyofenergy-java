@@ -1,19 +1,29 @@
 plugins {
+    id 'project-report'
     id 'java'
     id 'idea'
     id 'org.springframework.boot' version '2.6.1'
     id 'io.spring.dependency-management' version '1.0.11.RELEASE'
+    id 'org.barfuin.gradle.taskinfo' version '1.0.5'
 }
 
 ext['log4j2.version'] = "2.17.0"         // mitigates various vulnerabilities in log4j
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = projectCompatibility
+    targetCompatibility = projectCompatibility
 }
 
 repositories {
     mavenCentral()
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+
+    functionalTestImplementation.extendsFrom testImplementation
+    functionalTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
 
 sourceSets {
@@ -25,18 +35,44 @@ sourceSets {
         }
         resources.srcDir file('src/functional-test/resources')
     }
+    integrationTest {
+        java {
+            compileClasspath += main.output + test.output
+            runtimeClasspath += main.output + test.output
+            srcDir file('src/test/java/integration')
+        }
+    }
+    test {
+        java {
+            exclude "integration/**/*"
+        }
+    }
 }
+
+def mainClass = 'uk.tw.energy.App'
 
 idea {
     module {
+        testSourceDirs += project.sourceSets.integrationTest.java.srcDirs
         testSourceDirs += project.sourceSets.functionalTest.java.srcDirs
         testSourceDirs += project.sourceSets.functionalTest.resources.srcDirs
     }
 }
 
-configurations {
-    functionalTestImplementation.extendsFrom testImplementation
-    functionalTestRuntimeOnly.extendsFrom testRuntimeOnly
+task integrationTest(type: Test) {
+    group = 'verification'
+    description = 'Runs the integration tests.'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+//  Uncomment the next line to force to run this task always regardless of caching run
+//    outputs.upToDateWhen { false }
+    mustRunAfter test
+
+    useJUnitPlatform()
+
+    testLogging {
+        events = ['FAILED', 'PASSED', 'SKIPPED']
+    }
 }
 
 task functionalTest(type: Test) {
@@ -44,13 +80,14 @@ task functionalTest(type: Test) {
     description = 'Runs the functional tests.'
     testClassesDirs = sourceSets.functionalTest.output.classesDirs
     classpath = sourceSets.functionalTest.runtimeClasspath
-    outputs.upToDateWhen { false }
-    mustRunAfter test
+//  Uncomment the next line to force to run this task always regardless of caching run
+//    outputs.upToDateWhen { false }
+    mustRunAfter integrationTest
 
     useJUnitPlatform()
 
     testLogging {
-        events = ['FAILED', 'PASSED', 'SKIPPED', 'STANDARD_OUT']
+        events = ['FAILED', 'PASSED', 'SKIPPED']
     }
 }
 
@@ -60,16 +97,46 @@ dependencies {
     testImplementation('org.springframework.boot:spring-boot-starter-test') {
         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
     }
+    testImplementation 'org.junit.platform:junit-platform-launcher:1.8.2'
 }
 
 test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        def testTags = project.findProperty('includeTags') ?: ''
+        if (testTags != '') {
+            includeTags testTags
+        }
+
+        maxParallelForks = (int) (Runtime.runtime.availableProcessors() / 2 + 1)
+        systemProperties["junit.jupiter.execution.parallel.enabled"] = true
+        systemProperties["junit.jupiter.execution.parallel.mode.default"] = "concurrent"
+        systemProperties["junit.platform.listeners.uid.tracking.enabled"] = true
+
+    }
 
     testLogging {
         events = ['FAILED', 'PASSED', 'SKIPPED', 'STANDARD_OUT']
     }
 }
 
+jar {
+//    archiveBaseName = 'joi'
+    archiveVersion = '1.0'
+    manifest {
+        attributes 'Main-Class': mainClass
+    }
+}
+
 check {
     dependsOn functionalTest
+    dependsOn integrationTest
 }
+
+
+tasks.register('copyDependentLibs', Copy) {
+    from configurations.runtimeClasspath
+    into "$buildDir/dependentLibs"
+}
+
+jar.dependsOn('copyDependentLibs')
+
